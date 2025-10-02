@@ -1,6 +1,6 @@
 module github.com/planxnx/ethereum-wallet-generator
 
-go 1.21
+go 1.24.7
 
 require (
 	github.com/btcsuite/btcd v0.24.0
