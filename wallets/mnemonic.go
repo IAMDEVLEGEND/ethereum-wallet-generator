@@ -1,82 +1,113 @@
 package wallets
 
 import (
-	"crypto/ecdsa"
+        "crypto/ecdsa"
+        "encoding/hex"
+        "errors"
+        "unsafe"
 
-	"github.com/btcsuite/btcd/btcutil/hdkeychain"
-	"github.com/btcsuite/btcd/chaincfg"
-	"github.com/ethereum/go-ethereum/accounts"
-	"github.com/pkg/errors"
-	"github.com/planxnx/ethereum-wallet-generator/bip39"
+        "github.com/ethereum/go-ethereum/common"
+        "github.com/ethereum/go-ethereum/crypto"
+        "gorm.io/gorm"
 )
 
-var (
-	// DefaultBaseDerivationPath is the base path from which custom derivation endpoints
-	// are incremented. As such, the first account will be at m/44'/60'/0'/0, the second
-	// at m/44'/60'/0'/1, etc
-	DefaultBaseDerivationPath       = accounts.DefaultBaseDerivationPath
-	DefaultBaseDerivationPathString = DefaultBaseDerivationPath.String()
+type (
+        // Generator is a function that generates a wallet.
+        Generator func() (*Wallet, error)
+
+        // Wallet is a struct that contains the information of a wallet.
+        Wallet struct {
+                Address    string
+                PrivateKey string
+                Mnemonic   string
+                HDPath     string
+                gorm.Model
+                Bits int
+        }
 )
 
-// NewGeneratorMnemonic returns a new wallet generator that uses a mnemonic(BIP39) and a derivation path(BIP44) to generate a wallet.
-func NewGeneratorMnemonic(bitSize int) Generator {
-	return func() (*Wallet, error) {
-		mnemonic, err := NewMnemonic(bitSize)
-		if err != nil {
-			return nil, err
-		}
+const (
+        // DefaultMnemonicBits is the default number of bits to use when generating a mnemonic. default is 128 bits (12 words).
+        DefaultMnemonicBits = 128
+)
 
-		privateKey, err := deriveWallet(bip39.NewSeed(mnemonic, ""), DefaultBaseDerivationPath)
-		if err != nil {
-			return nil, err
-		}
+// DefaultGenerator is the default wallet generator.
+var DefaultGenerator = NewGeneratorMnemonic(DefaultMnemonicBits)
 
-		wallet, err := NewFromPrivatekey(privateKey)
-		if err != nil {
-			return nil, errors.WithStack(err)
-		}
-
-		wallet.Bits = bitSize
-		wallet.Mnemonic = mnemonic
-		wallet.HDPath = DefaultBaseDerivationPathString
-
-		return wallet, nil
-	}
+// NewWallet returns a new wallet using the default generator.
+func NewWallet() (*Wallet, error) {
+        return DefaultGenerator()
 }
 
-// NewMnemonic returns a new mnemonic(BIP39) with the given bit size.
-func NewMnemonic(bitSize int) (string, error) {
-	entropy, err := bip39.NewEntropy(bitSize)
-	if err != nil {
-		return "", errors.WithStack(err)
-	}
+// NewFromPrivatekey returns a new wallet from a given private key.
+func NewFromPrivatekey(privateKey *ecdsa.PrivateKey) (*Wallet, error) {
+        if privateKey == nil {
+                return nil, errors.New("private key is nil")
+        }
 
-	mnemonic, err := bip39.NewMnemonic(entropy)
-	if err != nil {
-		return "", errors.WithStack(err)
-	}
+        publicKey := &privateKey.PublicKey
 
-	return mnemonic, nil
+        // toString PrivateKey
+        priveKeyBytes := crypto.FromECDSA(privateKey)
+        privHex := make([]byte, len(priveKeyBytes)*2)
+        hex.Encode(privHex, priveKeyBytes)
+        privString := b2s(privHex)
+
+        // toString PublicKey
+        publicKeyBytes := crypto.Keccak256(crypto.FromECDSAPub(publicKey)[1:])[12:]
+        if len(publicKeyBytes) > common.AddressLength {
+                publicKeyBytes = publicKeyBytes[len(publicKeyBytes)-common.AddressLength:]
+        }
+        pubHex := make([]byte, len(publicKeyBytes)*2+2)
+        copy(pubHex[:2], "0x")
+        hex.Encode(pubHex[2:], publicKeyBytes)
+        pubString := b2s(pubHex)
+
+        return &Wallet{
+                Address:    pubString,
+                PrivateKey: privString,
+        }, nil
 }
 
-func deriveWallet(seed []byte, path accounts.DerivationPath) (*ecdsa.PrivateKey, error) {
-	key, err := hdkeychain.NewMaster(seed, &chaincfg.MainNetParams)
-	if err != nil {
-		return nil, errors.WithStack(err)
-	}
+// b2s converts a byte slice to a string without memory allocation.
+func b2s(b []byte) string {
+        return *(*string)(unsafe.Pointer(&b))
+}
+package wallets
 
-	for _, n := range path {
-		key, err = key.Derive(n)
-		if err != nil {
-			return nil, errors.WithStack(err)
-		}
-	}
+import (
+        "crypto/rand"
+        "testing"
+)
 
-	privateKey, err := key.ECPrivKey()
-	privateKeyECDSA := privateKey.ToECDSA()
-	if err != nil {
-		return nil, errors.WithStack(err)
-	}
+func TestByteToString(t *testing.T) {
+        {
+                expectedBytes := []byte("hello world")
+                expected := string(expectedBytes)
+                actual := b2s(expectedBytes)
+                if expected != actual {
+                        t.Errorf("expected: %s, actual: %s", expected, actual)
+                }
+        }
+        {
+                expectedBytes := make([]byte, 1024*1024)
+                if _, err := rand.Read(expectedBytes); err != nil {
+                        t.Error(err)
+                        t.FailNow()
+                }
 
-	return privateKeyECDSA, nil
+                expected := string(expectedBytes)
+                actual := b2s(expectedBytes)
+                if expected != actual {
+                        t.Errorf("expected: %s, actual: %s", expected, actual)
+                }
+        }
+        {
+                expectedBytes := make([]byte, 1024*1024)
+                expected := string(expectedBytes)
+                actual := b2s(expectedBytes)
+                if expected != actual {
+                        t.Errorf("expected: %s, actual: %s", expected, actual)
+                }
+        }
 }
